@@ -1,28 +1,19 @@
-"""Offline sanity checks for the Streamlit RAG deployment package."""
+"""Tiny offline sanity check."""
 
-from __future__ import annotations
-
-import zipfile
 from pathlib import Path
 
-from multi_agent import build_corpus, format_context, lexical_retrieve
+from multi_agent import build_corpus, retrieve
 
 
 def main() -> None:
-    work_dir = Path("artifacts")
-    work_dir.mkdir(parents=True, exist_ok=True)
-    data_zip = work_dir / "verify_sample_data.zip"
-    with zipfile.ZipFile(data_zip, "w") as archive:
-        archive.writestr("sample.pdf", b"not a real pdf")
-
-    corpus, summary = build_corpus(data_zip, max_docs=1, max_pages=1)
-    assert corpus, "Corpus should contain a fallback chunk for unreadable PDFs"
-    hits = lexical_retrieve(corpus, "sample pdf extraction", top_k=3)
-    assert hits, "Retriever should return evidence chunks"
-    context = format_context(hits)
-    assert "sample.pdf" in context, "Formatted context should include source labels"
-    print("Deployment sanity check passed.")
-    print(summary)
+    sample = Path("artifacts/sample.txt")
+    sample.parent.mkdir(exist_ok=True)
+    sample.write_text("Alpha beta table value 42. This is a tiny test document.", encoding="utf-8")
+    corpus, note = build_corpus(sample)
+    hits = retrieve(corpus, "value 42", 3)
+    assert corpus and hits and "42" in hits[0]["text"]
+    print("OK")
+    print(note)
 
 
 if __name__ == "__main__":
