@@ -53,7 +53,15 @@ On Streamlit Cloud:
 
 For Hugging Face, set `LLM_PROVIDER="huggingface"`, `HF_TOKEN`, and optionally `HF_MODEL` in Streamlit secrets.
 
-The RAG pipeline does not split every 1000 characters. It preserves page boundaries, detects section headings, extracts tables with `pdfplumber`/spreadsheet readers when available, chunks by section and sentence windows, retrieves with LlamaIndex BM25, boosts exact numerical matches, and retrieves adjacent chunks for connected context.
+The RAG pipeline does not split every 1000 characters. It preserves page boundaries, detects section headings, extracts tables with `pdfplumber`/spreadsheet readers when available, chunks by section and sentence windows, retrieves with LlamaIndex BM25 or TF-IDF + ANN/CNN reranking, boosts exact numerical matches, and retrieves adjacent chunks for connected context.
+
+The `TF-IDF + ANN/CNN` retrieval engine uses:
+
+- TF-IDF vectors with word/phrase features.
+- A lightweight ANN trained with backpropagation on pseudo-positive retrieval labels.
+- A small CNN-style 1D convolution feature over TF-IDF dimensions.
+
+Answers can be downloaded as Markdown, JSON, CSV, HTML, or TXT from the Streamlit UI.
 
 ## Monitoring And Feedback
 

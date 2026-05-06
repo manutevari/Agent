@@ -621,6 +621,104 @@ def llamaindex_retrieve(corpus: List[Dict[str, Any]], query: str, top_k: int = 6
     return results[:top_k] or lexical_retrieve(corpus, query, top_k=top_k)
 
 
+def tfidf_ann_cnn_retrieve(corpus: List[Dict[str, Any]], query: str, top_k: int = 6) -> List[Dict[str, Any]]:
+    """Retrieve with TF-IDF plus lightweight ANN/CNN-style reranking.
+
+    The ANN is trained with a tiny pseudo-label backpropagation step where the
+    strongest TF-IDF matches are positives. A small 1D convolution over TF-IDF
+    dimensions adds local pattern features for table/numeric-heavy queries.
+    """
+
+    if not corpus:
+        return []
+
+    try:
+        import numpy as np
+        from sklearn.feature_extraction.text import TfidfVectorizer
+    except ImportError:
+        return lexical_retrieve(corpus, query, top_k=top_k)
+
+    texts = [
+        f"{item.get('source', '')} {item.get('section', '')} {item.get('kind', '')} {item.get('text', '')}"
+        for item in corpus
+    ]
+    try:
+        vectorizer = TfidfVectorizer(max_features=2048, ngram_range=(1, 2), stop_words="english")
+        matrix = vectorizer.fit_transform(texts)
+        query_vec = vectorizer.transform([query])
+    except ValueError:
+        return lexical_retrieve(corpus, query, top_k=top_k)
+
+    dense = matrix.toarray().astype("float32")
+    q_dense = query_vec.toarray().astype("float32")[0]
+    tfidf_scores = (dense @ q_dense).astype("float32")
+
+    if dense.shape[1] >= 5:
+        kernel = np.array([0.15, 0.25, 0.2, 0.25, 0.15], dtype="float32")
+        cnn_features = np.array([np.convolve(row, kernel, mode="valid").max(initial=0.0) for row in dense], dtype="float32")
+    else:
+        cnn_features = tfidf_scores.copy()
+
+    numeric_query = set(extract_numbers(query))
+    numeric_features = np.array(
+        [len(numeric_query.intersection(set(item.get("numbers", [])))) for item in corpus],
+        dtype="float32",
+    )
+    table_features = np.array([1.0 if item.get("kind") == "table" else 0.0 for item in corpus], dtype="float32")
+
+    features = np.column_stack([tfidf_scores, cnn_features, numeric_features, table_features]).astype("float32")
+    if features.std(axis=0).sum() > 0:
+        features = (features - features.mean(axis=0)) / (features.std(axis=0) + 1e-6)
+
+    labels = np.zeros(len(corpus), dtype="float32")
+    positive_count = max(1, min(top_k, len(corpus)))
+    labels[np.argsort(tfidf_scores)[-positive_count:]] = 1.0
+
+    rng = np.random.default_rng(7)
+    hidden_size = 6
+    w1 = rng.normal(0, 0.2, size=(features.shape[1], hidden_size)).astype("float32")
+    b1 = np.zeros(hidden_size, dtype="float32")
+    w2 = rng.normal(0, 0.2, size=(hidden_size, 1)).astype("float32")
+    b2 = np.zeros(1, dtype="float32")
+
+    def sigmoid(x: Any) -> Any:
+        return 1.0 / (1.0 + np.exp(-np.clip(x, -20, 20)))
+
+    lr = 0.05
+    for _ in range(12):
+        hidden_raw = features @ w1 + b1
+        hidden = np.maximum(hidden_raw, 0)
+        pred = sigmoid(hidden @ w2 + b2).reshape(-1)
+        error = pred - labels
+        grad_w2 = hidden.T @ error.reshape(-1, 1) / len(features)
+        grad_b2 = np.array([error.mean()], dtype="float32")
+        grad_hidden = error.reshape(-1, 1) @ w2.T
+        grad_hidden[hidden_raw <= 0] = 0
+        grad_w1 = features.T @ grad_hidden / len(features)
+        grad_b1 = grad_hidden.mean(axis=0)
+        w2 -= lr * grad_w2
+        b2 -= lr * grad_b2
+        w1 -= lr * grad_w1
+        b1 -= lr * grad_b1
+
+    hidden = np.maximum(features @ w1 + b1, 0)
+    ann_scores = sigmoid(hidden @ w2 + b2).reshape(-1)
+    final_scores = 0.55 * tfidf_scores + 0.25 * ann_scores + 0.15 * cnn_features + 0.05 * numeric_features
+
+    ranked = []
+    for idx in np.argsort(final_scores)[::-1][:top_k]:
+        item = dict(corpus[int(idx)])
+        item["score"] = float(final_scores[int(idx)])
+        item["retrieval_features"] = {
+            "tfidf": float(tfidf_scores[int(idx)]),
+            "ann_backprop": float(ann_scores[int(idx)]),
+            "cnn": float(cnn_features[int(idx)]),
+            "numeric": float(numeric_features[int(idx)]),
+        }
+        ranked.append(item)
+    return ranked or lexical_retrieve(corpus, query, top_k=top_k)
+
+
 def corpus_as_langchain_documents(corpus: List[Dict[str, Any]]) -> List[Any]:
     """Represent preserved corpus chunks as LangChain Documents."""
 
@@ -963,6 +1061,7 @@ async def answer_rag_chat(
     top_k: int = 8,
     use_llamaindex: bool = True,
     allow_external_knowledge: bool = False,
+    retrieval_engine: str = "llamaindex",
 ) -> Dict[str, Any]:
     """Answer one chatbot query with retrieved section/table-aware context."""
 
@@ -971,7 +1070,12 @@ async def answer_rag_chat(
     if selected_provider not in {"local", "grok", "gemini", "openai", "huggingface"}:
         raise ValueError("LLM_PROVIDER must be one of: local, grok, gemini, openai, huggingface")
 
-    retrieve = llamaindex_retrieve if use_llamaindex else lexical_retrieve
+    if retrieval_engine == "tfidf_ann_cnn":
+        retrieve = tfidf_ann_cnn_retrieve
+    elif use_llamaindex:
+        retrieve = llamaindex_retrieve
+    else:
+        retrieve = lexical_retrieve
     retrieved = retrieve(corpus, question, top_k=top_k)
     langchain_documents = corpus_as_langchain_documents(retrieved)
     context = format_context(retrieved, max_chars=12000)

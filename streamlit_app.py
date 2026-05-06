@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any, Dict, List
 import streamlit as st
 
 from monitoring import log_feedback, log_rag_event, monitoring_summary, write_evidently_report
-from multi_agent import answer_rag_chat, answer_with_agent_pipeline_from_corpus, build_corpus, build_corpus_from_paths, format_context, lexical_retrieve, llamaindex_retrieve, run_multi_agent
+from multi_agent import answer_rag_chat, answer_with_agent_pipeline_from_corpus, build_corpus, build_corpus_from_paths, format_context, lexical_retrieve, llamaindex_retrieve, run_multi_agent, tfidf_ann_cnn_retrieve
 
 
 st.set_page_config(page_title="PDF Multi-Agent RAG", page_icon="A", layout="wide")
@@ -96,6 +97,31 @@ def run_async(coro: Any) -> Any:
     return loop.run_until_complete(coro)
 
 
+def export_answer(answer: str, sources: List[Dict[str, Any]], fmt: str) -> tuple[bytes, str, str]:
+    """Generate downloadable answer output in common formats."""
+
+    stem = "rag_answer"
+    if fmt == "Markdown":
+        body = answer + "\n\n## Sources\n" + "\n".join(f"- {s.get('source')} | {s.get('section')} | pp. {s.get('page_start')}-{s.get('page_end')}" for s in sources)
+        return body.encode("utf-8"), f"{stem}.md", "text/markdown"
+    if fmt == "JSON":
+        body = json.dumps({"answer": answer, "sources": sources}, indent=2, ensure_ascii=True)
+        return body.encode("utf-8"), f"{stem}.json", "application/json"
+    if fmt == "CSV":
+        rows = ["field,value", f"answer,{json.dumps(answer)}"]
+        for idx, source in enumerate(sources, start=1):
+            rows.append(f"source_{idx},{json.dumps(source.get('source', ''))}")
+            rows.append(f"section_{idx},{json.dumps(source.get('section', ''))}")
+            rows.append(f"pages_{idx},{json.dumps(str(source.get('page_start')) + '-' + str(source.get('page_end')))}")
+        return "\n".join(rows).encode("utf-8"), f"{stem}.csv", "text/csv"
+    if fmt == "HTML":
+        source_items = "".join(f"<li>{s.get('source')} | {s.get('section')} | pp. {s.get('page_start')}-{s.get('page_end')}</li>" for s in sources)
+        body = f"<!doctype html><html><body><h1>RAG Answer</h1><pre>{answer}</pre><h2>Sources</h2><ul>{source_items}</ul></body></html>"
+        return body.encode("utf-8"), f"{stem}.html", "text/html"
+    body = answer + "\n\nSources:\n" + "\n".join(str(s.get("source")) for s in sources)
+    return body.encode("utf-8"), f"{stem}.txt", "text/plain"
+
+
 apply_secret_env()
 
 st.title("Scientific PDF RAG Chatbot")
@@ -109,8 +135,10 @@ with st.sidebar:
     max_docs = st.slider("Files or ZIP members to index", min_value=1, max_value=64, value=16)
     max_pages = st.slider("Pages per PDF", min_value=1, max_value=80, value=12)
     top_k = st.slider("Evidence chunks", min_value=3, max_value=15, value=8)
-    use_llamaindex = st.toggle("Use LlamaIndex retrieval", value=True)
+    retrieval_engine = st.selectbox("Retrieval engine", options=["LlamaIndex BM25", "TF-IDF + ANN/CNN", "Lexical numeric"], index=0)
+    use_llamaindex = retrieval_engine == "LlamaIndex BM25"
     allow_external_knowledge = st.toggle("Allow open-source/general knowledge", value=False)
+    output_format = st.selectbox("Answer download format", options=["Markdown", "JSON", "CSV", "HTML", "TXT"], index=0)
 
     st.header("Model")
     provider = st.selectbox("Provider", options=["local", "grok", "gemini", "openai", "huggingface"], index=0)
@@ -188,7 +216,12 @@ with st.form("query_form", clear_on_submit=True):
     submitted_question = st.form_submit_button("Ask", type="primary")
 
 preview_query = st.text_input("Evidence preview", value="glycoprotein structure fusion pH neutralizing antibody")
-preview_retrieve = llamaindex_retrieve if use_llamaindex else lexical_retrieve
+if retrieval_engine == "TF-IDF + ANN/CNN":
+    preview_retrieve = tfidf_ann_cnn_retrieve
+elif retrieval_engine == "LlamaIndex BM25":
+    preview_retrieve = llamaindex_retrieve
+else:
+    preview_retrieve = lexical_retrieve
 matches = preview_retrieve(corpus, preview_query, top_k=top_k)
 
 if matches:
@@ -243,6 +276,7 @@ if question:
                             top_k=top_k,
                             use_llamaindex=use_llamaindex,
                             allow_external_knowledge=allow_external_knowledge,
+                            retrieval_engine="tfidf_ann_cnn" if retrieval_engine == "TF-IDF + ANN/CNN" else ("llamaindex" if retrieval_engine == "LlamaIndex BM25" else "lexical"),
                         )
                     )
             except Exception as exc:
@@ -259,8 +293,10 @@ if question:
                 st.text(str(source.get("text", ""))[:1800])
         st.caption(f"{response['provider']} / {response['model']} in {response['latency_s']:.2f}s")
         st.caption(f"LangChain documents: {response.get('langchain_document_count', 0)}")
+        download_bytes, download_name, mime_type = export_answer(response["answer"], response["sources"], output_format)
+        st.download_button("Download answer", data=download_bytes, file_name=download_name, mime=mime_type)
 
-    retrieval_mode = "agent_planner_executor_verifier" if response_mode == "Planner -> Executor -> Verifier" else ("llamaindex_bm25+numeric" if use_llamaindex else "lexical_numeric")
+    retrieval_mode = "agent_planner_executor_verifier" if response_mode == "Planner -> Executor -> Verifier" else retrieval_engine.lower().replace(" ", "_").replace("/", "_")
     log_rag_event(
         question=question,
         answer=response["answer"],
