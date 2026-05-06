@@ -1,0 +1,32 @@
+{
+  "goal": "Research and summarize the top 3 trends in generative AI for 2025",
+  "tasks": [],
+  "results": [],
+  "critique": "Main data archive: C:\\Users\\Dell\\Downloads\\data_suryakant.zip. PDF files: 16; indexed files: 2; chunks: 2; frequent terms: text, extraction, dependency, unavailable, source, file, atlas_gc_pf_sciadv, bio-protocol_fussion.",
+  "approved": true,
+  "score": 100,
+  "iteration": 0,
+  "metrics": [
+    {
+      "agent": "corpus",
+      "latency_s": 0.0,
+      "items": 2
+    }
+  ],
+  "data_zip": "C:\\Users\\Dell\\Downloads\\data_suryakant.zip",
+  "corpus": [
+    {
+      "source": "atlas_Gc_pf_sciAdv.pdf",
+      "chunk_id": 0,
+      "text": "PDF text extraction dependency is unavailable. Source file: atlas_Gc_pf_sciAdv.pdf",
+      "score": 0.0
+    },
+    {
+      "source": "Bio-protocol_fussion.pdf",
+      "chunk_id": 0,
+      "text": "PDF text extraction dependency is unavailable. Source file: Bio-protocol_fussion.pdf",
+      "score": 0.0
+    }
+  ],
+  "corpus_summary": "Main data archive: C:\\Users\\Dell\\Downloads\\data_suryakant.zip. PDF files: 16; indexed files: 2; chunks: 2; frequent terms: text, extraction, dependency, unavailable, source, file, atlas_gc_pf_sciadv, bio-protocol_fussion."
+}
